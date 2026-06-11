@@ -59,7 +59,7 @@
 #include "elmodefines.h"
 
 #include "include/powermodel.h"
-#include "include/fixedvsrandom.h"
+unsigned int tracenumber, instructions, leakyinstructionno = 0;
 
 #ifdef MASKFLOW
     #include "include/maskflow.h"
@@ -69,77 +69,6 @@
     #include "include/energy.h"
 #endif
 
-#ifndef Pi 
-#define Pi 3.141592653589793238462643 
-#endif 
-// Abramowitz and Stegun "Handbook of Mathematical Functions" formula 26.2.23.
-double RationalApproximation(double t)
-{
-    double c[] = {2.515517, 0.802853, 0.010328};
-    double d[] = {1.432788, 0.189269, 0.001308};
-    return t - ((c[2]*t + c[1])*t + c[0]) /
-        (((d[2]*t + d[1])*t + d[0])*t + 1.0);
-}
-double NormalCDFInverse(double p)
-{
-    if (p < 0.5)
-    {
-        return -RationalApproximation( sqrt(-2.0*log(p)) );
-    }
-    else
-    {
-        return RationalApproximation( sqrt(-2.0*log(1-p)) );
-    }
-}
-double gaussian_quantile(double alpha)
-{
-
-    return NormalCDFInverse(1-alpha);
-}
-
-
-double gaussian_CDF(double x)
-{
-  double L, K, w ;
-  /* constants */
-  double const a1 = 0.31938153, a2 = -0.356563782, a3 = 1.781477937;
-  double const a4 = -1.821255978, a5 = 1.330274429;
-
-  L = fabs(x);
-  K = 1.0 / (1.0 + 0.2316419 * L);
-  w = 1.0 - 1.0 / sqrt(2 * Pi) * exp(-L *L / 2) * (a1 * K + a2 * K *K + a3 * pow(K,3) + a4 * pow(K,4) + a5 * pow(K,5));
-
-  if (x < 0 ){
-    w= 1.0 - w;
-  }
-  return w;
-}
-//Automatically decide the number of traces for TVLA
-/*int getsamplesize_standardTVLA(){
-
-    //formula (2) in Section3.pdf
-    double upper=(gaussian_quantile(Statistical_alpha)+gaussian_quantile(Statistical_beta))*(gaussian_quantile(Statistical_alpha)+gaussian_quantile(Statistical_beta))*2*Model_Variance;
-    double lower=EffectiveSize*EffectiveSize;
-    double N=2*floor(upper/lower);//Multiply 2 to counter the statistic effect
-
-    //Set a minimal value for N
-    if(N<50)
-	N=50;
-    printf("ES=%lf, alpha=%lf, beta=%lf, N=%lf\n",EffectiveSize,Statistical_alpha,Statistical_beta,N);
-    return (int)N;
-}
-*/
-//-------------------------------------------------------------------
-//Calculate the statistical power of the TVLA test under given number of traces
-//Caution note: as ELMO is a determinstic simulation, this beta might not be accurate
-double TVLA_power()
-{
-     //Formula (8) in the notes
-     double z_alpha=gaussian_quantile(Statistical_alpha/2.0);
-     double z_beta=sqrt(N)*EffectiveSize/2.0-z_alpha;
-     return 1-gaussian_CDF(z_beta);
-
-}
 // Linked list functions for maskflow
 
 #ifdef MEMORY_EXTENSION
@@ -240,8 +169,8 @@ dataflow *update_dataflow(dataflow *item, unsigned int op1, unsigned int op2, un
 
     if((t==1)||(item->next==NULL)){
         item = create_dataflow(item);
-	if(t!=1)
-	  printf("Trace Length Difference! Check your code...\n");
+	//if(t!=1)
+	  //printf("Trace Length Difference! Check your code...\n");
     }
     else{
         item = item->next;
@@ -408,14 +337,57 @@ unsigned int leakagetestfail(void){
 
 //-------------------------------------------------------------------
 
+/* ── Binary output ──────────────────────────────────────────────────── */
+
+/* Box-Muller: standard normal sample */
+static double randn(void)
+{
+    double u1 = ((double)rand() + 1.0) / ((double)RAND_MAX + 2.0);
+    double u2 =  (double)rand()        /  (double)RAND_MAX;
+    return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+}
+
+static void write_binfiles(void)
+{
+    FILE *f;
+    size_t i, n = (size_t)N * mat_trace_len;
+
+    /* traces.bin : N * mat_trace_len doubles, row-major */
+    f = fopen("output/traces.bin", "wb");
+    if (!f) { perror("output/traces.bin"); return; }
+    if (mat_traces) {
+        if (noise_amplitude == 0.0) {
+            fwrite(mat_traces, sizeof(double), n, f);
+        } else {
+            for (i = 0; i < n; i++) {
+                double v = mat_traces[i] + noise_amplitude * randn();
+                fwrite(&v, sizeof(double), 1, f);
+            }
+        }
+    }
+    fclose(f);
+
+    /* plaintexts.bin : N * 16 uint8, row-major */
+    f = fopen("output/plaintexts.bin", "wb");
+    if (!f) { perror("output/plaintexts.bin"); return; }
+    if (mat_plaintexts) {
+        for (i = 0; i < (size_t)N * 16; i++) {
+            uint8_t b = (uint8_t)mat_plaintexts[i];
+            fwrite(&b, 1, 1, f);
+        }
+    }
+    fclose(f);
+
+    printf("Binary files written: output/traces.bin (%d x %d float64)"
+           "  output/plaintexts.bin (%d x 16 uint8)\n",
+           N, mat_trace_len, N);
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
+
 void dump_counters ( void )
 {
-    FILE *fp;
-    
-    // Get trace length
-    fp = loadtrace(1);
-    tracelength = gettracelength(fp);
-    fclose(fp);
+    tracelength = mat_trace_len;
     instructions = tracelength;
     
     printf("\n########################################\n\nSUMMARY:\n");
@@ -425,12 +397,6 @@ void dump_counters ( void )
 #ifdef ENERGYMODEL
     printf("total energy consumption %0.20f\n",energy);
 #endif
-//#ifdef AUTOTVLA
-    Statistical_beta=TVLA_power();
-    printf("User provided traces: %d\n",N);
-    printf("alpha=%0.5f, standardised effect size=%0.5f\n",Statistical_alpha,EffectiveSize);
-    printf("Power of the test=%0.5f\n",1-Statistical_beta);
-//#endif
     printf("first order fixed vs random fail instructions/cycles %d\n",leakyinstructionno);
 #ifdef MASKFLOW
     printf("second order fixed vs random instructions/cycles\n");
@@ -564,17 +530,11 @@ if(registerdataflow && DBUG) fprintf(stderr,"write32(0x%08X,0x%08X)\n",addr,data
         case 0xF0000000: //halt
             tracenumber = (t-1);
 
-#ifdef FIXEDVSRANDOM
-            if(fixedvsrandomtest){
-                tracenumber = (t-1)/2;
-                fixedvsrandom();
-            }
-#endif
-            
 #ifdef ENERGYMODEL
             getenergy();
 #endif
 
+            write_binfiles();
             dump_counters();
             exit(0);
         case 0xE0000000: //print byte
@@ -628,17 +588,18 @@ if(registerdataflow && DBUG) fprintf(stderr,"write32(0x%08X,0x%08X)\n",addr,data
 #else
                         elmopowermodel();
 #endif
-                        
+
 #ifdef MASKFLOW
                         if (t==1) maskflowfailtest();
 #endif
-                        
+
 #ifdef DIFFTRACELENGTH
                         freedataflow();
 #endif
-                        
+
                         indexno = 1;
                         if(t==1 || PRINTALLASMTRACES) fclose(asmoutput);
+                        mat_pt_cursor = 0;
                         t++;
                         
                     }
@@ -801,6 +762,12 @@ unsigned int read32 ( unsigned int addr )
                 {
                     data = rand();
                     fprintf(randdata,"%2x\n",data&0xFF);
+                    if (mat_plaintexts != NULL) {
+                        int row = (int)t - (int)tracestart;
+                        if (row >= 0 && row < N && mat_pt_cursor < 16)
+                            mat_plaintexts[(size_t)row * 16 + mat_pt_cursor] = (double)(data & 0xFF);
+                        mat_pt_cursor++;
+                    }
                     free(str);
                     return(data);
                 }
@@ -818,15 +785,6 @@ unsigned int read32 ( unsigned int addr )
                     return(data);
 
                 }
-                case 0xE1000010://New ELMO library function: LoadNForTVLA(&N), return the automatically determined number of traces for one Fix-vs-Random Ttest
-                {
-                    //data=getsamplesize_standardTVLA();
-		    data=N;
-                    free(str);
-                    return(data);
-
-                }
-
             }
         }
             
@@ -4175,7 +4133,10 @@ int main ( int argc, char *argv[] )
     const char s[2] = " ";
     char *token;
     
-    t = 1; registerdataflow = 0; indexno = 1; maskflowfailno = 0, debug = 0, fvr_only = 0, tracestart = 1; runcount = 0, fixedvsrandomtest = 1;
+    t = 1; registerdataflow = 0; indexno = 1; maskflowfailno = 0, debug = 0, fvr_only = 0, tracestart = 1; runcount = 0;
+    mat_traces = NULL; mat_plaintexts = NULL; mat_trace_len = 0; mat_pt_cursor = 0;
+    mat_first_row = NULL; mat_first_cap = 0; mat_first_len = 0;
+    noise_amplitude = 0.0;
 
     // Make directories with given permission settings. Default 0777.
     mkdir(OUTPUTFOLDER, 0777);
@@ -4215,25 +4176,11 @@ int main ( int argc, char *argv[] )
         fprintf(stderr,"bin file not specified\n");
         return(1);
     }
-    //Default value for effectivesize, alpha and beta (for automation of the number of traces of TVLA)
-    EffectiveSize=EFFECTIVESIZE;
-    Statistical_alpha=TVLA_ALPHA;
-    Statistical_beta=TVLA_BETA;
-    N=NUMTRACES;
+    N = 1;
     output_vcd=0;
     for(ra=0;ra<(unsigned)argc;ra++)
     {
         if(strcmp(argv[ra],"--vcd")==0) output_vcd=1;
-        if(strcmp(argv[ra],"-fvr")==0){
-            sscanf(argv[ra+1], "%d", &tracenumber);
-            fixedvsrandom();
-            dump_counters();
-            return(0);
-        }
-        if(strcmp(argv[ra],"-nofvr")==0){
-            fixedvsrandomtest = 0;
-        }
-        
         if(strcmp(argv[ra],"-starttrace")==0){
             sscanf(argv[ra+1], "%d", &t);
         }
@@ -4245,13 +4192,19 @@ int main ( int argc, char *argv[] )
         }
         //Load the number of traces
 #ifdef NTRACE
-         if(strcmp(argv[ra],"-Ntrace")==0){
+         if(strcmp(argv[ra],"-noise")==0){
+            sscanf(argv[ra+1], "%lf", &noise_amplitude);
+        }
+        if(strcmp(argv[ra],"-Ntrace")==0){
             sscanf(argv[ra+1], "%d", &N);
             //sscanf(argv[ra+2], "%lf", &Statistical_alpha);
             //sscanf(argv[ra+3], "%lf", &Statistical_beta);
         }
 #endif
     }
+    mat_plaintexts = (double*)calloc((size_t)N * 16, sizeof(double));
+    if (!mat_plaintexts) { fprintf(stderr,"calloc mat_plaintexts failed\n"); return(1); }
+
     fp=fopen(argv[1],"rb");
     if(fp==NULL)
     {
@@ -4330,9 +4283,6 @@ int main ( int argc, char *argv[] )
     readcoeffs(BitFlip1_bitinteractions,fpcoeffs, 496);
     readcoeffs(BitFlip2_bitinteractions,fpcoeffs, 496);
  
-    // read the extra variance estimation in the coefficient file
-    EffectiveSize=readeffectivesize(fpcoeffs);
-
     fclose(fpcoeffs);
     
     memset(ram,0x00,sizeof(ram));

@@ -1,8 +1,6 @@
-output/**
-*.elf
+output/
 *.bin
-*.map
-*.hex
-*.list
-*.d
-*.o
+*.mat
+*.elf
+test.py
+*.png

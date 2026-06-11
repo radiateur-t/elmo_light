@@ -108,7 +108,7 @@ unsigned long systick_ints;
 /*******************************************************************************************/
 /*ELMO*/
 #define MEMORY_EXTENSION//memory extension that keeps track of the read/write bus
-#define FIXEDVSRANDOM
+//#define FIXEDVSRANDOM
 //#define MASKFLOW
 //#define ENERGYMODEL
 
@@ -124,7 +124,6 @@ unsigned long systick_ints;
 #define CYCLEACCURATE 1
 #define NTRACE //Load number of traces from the command line arguments
 
-#define FIXEDVSRANDOMFAIL 4.5
 #define PRINTTRACENOINTERVAL 1
 
 // Make sure power traces and cycle accurate model are used if using energy model
@@ -142,7 +141,7 @@ unsigned long systick_ints;
 #endif
 #endif
 
-#define COEFFSFILE "coeffs_M3.txt"
+#define COEFFSFILE "coeffs.txt"
 
 #define OUTPUTFOLDER "output"
 #define TRACEFOLDER "output/traces/"
@@ -168,14 +167,18 @@ unsigned long systick_ints;
 //8 MHz
 #define CLOCKCYCLETIME 0.000000125
 
-//Default values for automatic TVLA
-#define TVLA_ALPHA 0.00001
-#define EFFECTIVESIZE 0.01
-#define TVLA_BETA 0.1
-#define NUMTRACES 200
-
-
 FILE *randdata, *uartout, *indexesfile, *datafile, *asmoutput, *maskflow;
+
+double noise_amplitude; /* std-dev of Gaussian noise added to traces (0 = none) */
+
+/* accumulation buffers */
+double *mat_traces;      /* [N × mat_trace_len], row-major, allocated after 1st trace */
+double *mat_plaintexts;  /* [N × 16], row-major, allocated at startup */
+int     mat_trace_len;   /* samples per trace, set after 1st trace */
+int     mat_pt_cursor;   /* randbyte index within current plaintext row */
+double *mat_first_row;   /* dynamic buffer used only during 1st trace */
+int     mat_first_cap;
+int     mat_first_len;
 
 unsigned int t;
 unsigned int tracestart;
@@ -191,14 +194,11 @@ unsigned int tracenumber;
 unsigned int maskflowfailno;
 unsigned int start_mask_dataflow;
 unsigned int debug;
-unsigned int fixedvsrandomtest;
 
 double energy;
 
 // Coeffiecients for power model
 double constant[5], PrvInstr[4][5], SubInstr[4][5], Operand1[32][5], Operand2[32][5], BitFlip1[32][5], BitFlip2[32][5],  HWOp1PrvInstr[4][5], HWOp2PrvInstr[4][5], HDOp1PrvInstr[4][5], HDOp2PrvInstr[4][5], HWOp1SubInstr[4][5], HWOp2SubInstr[4][5], HDOp1SubInstr[4][5], HDOp2SubInstr[4][5], Operand1_bitinteractions[496][5], Operand2_bitinteractions[496][5], BitFlip1_bitinteractions[496][5], BitFlip2_bitinteractions[496][5];
-// Parameters for calculating the sample size for standard Fix-vs-Random TVLA
-double EffectiveSize, Statistical_alpha, Statistical_beta;
 int N;
 
 struct bit32maskflow{
